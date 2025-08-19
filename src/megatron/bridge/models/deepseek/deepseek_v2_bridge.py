@@ -171,9 +171,7 @@ class DeepSeekV2Bridge(MegatronModelBridge):
 def register_deepseek_v2_bridge():
     """Register DeepSeekV2 model bridge implementations.
 
-    This function registers bridge implementations for DeepSeek V2 models,
-    enabling conversion between HuggingFace and Megatron formats without
-    downloading model weights during registration.
+    Cannot directly use the MegatronModelBridge.register_bridge decorator because these models use auto_map and are not in the transformers repository.
     """
     deepseek_v2_models = [
         "deepseek-ai/DeepSeek-V2",
