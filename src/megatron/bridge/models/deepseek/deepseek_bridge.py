@@ -20,26 +20,24 @@ from megatron.bridge.models.conversion.param_mapping import GatedMLPMapping
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
 from megatron.bridge.models.conversion.param_mapping import AutoMapping
-from megatron.bridge.models.deepseek.deepseek_provider import DeepSeekV2Provider
+from megatron.bridge.models.deepseek.deepseek_provider import DeepSeekProvider
 from megatron.bridge.models.conversion.utils import get_causal_lm_class_via_auto_map
 from megatron.bridge.models.hf_pretrained.causal_lm import PreTrainedCausalLM
 
 
-class DeepSeekV2Bridge(MegatronModelBridge):
+class DeepSeekBridge(MegatronModelBridge):
     """
-    Megatron Hub Bridge for DeepSeekV2 Causal LM.
+    Megatron Hub Bridge for DeepSeekV2 and DeepSeekV3 Causal LM.
 
-    This bridge handles the conversion between HuggingFace DeepSeekV2ForCausalLM
-    and Megatron-Core GPTModel formats. DeepSeekV2 models use mixture of experts
-    architecture with QK layernorm.
+    As a user you would not use this bridge directly, but through `AutoBridge`.
 
     Example:
         >>> from megatron.bridge import AutoBridge
-        >>> bridge = AutoBridge.from_hf_pretrained("Qwen/Qwen3-235B-A22B")
+        >>> bridge = AutoBridge.from_hf_pretrained("deepseek-ai/DeepSeek-V2-Lite")
         >>> provider = bridge.to_megatron_provider()
     """
 
-    def provider_bridge(self, hf_pretrained: PreTrainedCausalLM) -> DeepSeekV2Provider:
+    def provider_bridge(self, hf_pretrained: PreTrainedCausalLM) -> DeepSeekProvider:
         hf_config = hf_pretrained.config
 
         optional_kwargs = {}
@@ -48,7 +46,7 @@ class DeepSeekV2Bridge(MegatronModelBridge):
             optional_kwargs["moe_aux_loss_coeff"] = hf_config.aux_loss_alpha
 
         n_moe_layers = hf_config.num_hidden_layers - hf_config.first_k_dense_replace
-        provider = DeepSeekV2Provider(
+        provider = DeepSeekProvider(
             num_layers=hf_config.num_hidden_layers,
             hidden_size=hf_config.hidden_size,
             ffn_hidden_size=hf_config.intermediate_size,
@@ -122,14 +120,12 @@ class DeepSeekV2Bridge(MegatronModelBridge):
 
             # DSv2-Lite
             "model.layers.*.self_attn.q_proj.weight": "decoder.layers.*.self_attention.linear_q_proj.weight",
+
+            # expert bias
+            "model.layers.*.mlp.gate.e_score_correction_bias": "decoder.layers.*.mlp.router.expert_bias",
         }
 
-        # For lite model
-        # if self.config.q_lora_rank is None:
-        #     del mapping["model.layers.*.self_attn.q_a_proj.weight"]
-        #     del mapping["model.layers.*.self_attn.q_b_proj.weight"]
-        #     mapping["**.self_attn.q_proj.weight"] = "**.self_attention.linear_q_proj.weight"
-
+        # TODO: mtp layers
 
         mapping_list = []
         # Convert each dictionary entry to AutoMapping(hf_param, megatron_param)
@@ -143,6 +139,11 @@ class DeepSeekV2Bridge(MegatronModelBridge):
         #
         # (a) is defined in the `param_mappings` above, so we need to add (b) here separately (to avoid dictionary key conflict)
         mapping_list.append(AutoMapping(hf_param="model.layers.*.post_attention_layernorm.weight", megatron_param="decoder.layers.*.mlp.linear_fc1.layer_norm_weight"))
+
+        # Mcore local spec
+        mapping_list.append(AutoMapping(hf_param="model.layers.*.self_attn.q_a_layernorm.weight", megatron_param="decoder.layers.*.self_attention.q_layernorm.weight"))
+        mapping_list.append(AutoMapping(hf_param="model.layers.*.self_attn.kv_a_layernorm.weight", megatron_param="decoder.layers.*.self_attention.kv_layernorm.weight"))
+
 
         # Add special mappings that require parameter concatenation/transformation
         mapping_list.extend(
@@ -168,19 +169,21 @@ class DeepSeekV2Bridge(MegatronModelBridge):
         return MegatronMappingRegistry(*mapping_list)
 
 
-def register_deepseek_v2_bridge():
-    """Register DeepSeekV2 model bridge implementations.
+def register_deepseek_bridge():
+    """Register DeepSeek model bridge implementations.
 
-    Cannot directly use the MegatronModelBridge.register_bridge decorator because these models use auto_map and are not in the transformers repository.
+    Cannot directly use the MegatronModelBridge.register_bridge decorator because these models use auto_map and are not in the transformers repository, so they cannot be directly imported.
     """
-    deepseek_v2_models = [
+    deepseek_models = [
         "deepseek-ai/DeepSeek-V2",
         "deepseek-ai/DeepSeek-V2-Lite",
         "deepseek-ai/DeepSeek-V2-Chat",
         "deepseek-ai/DeepSeek-V2-Lite-Chat",
+        "moonshotai/Moonlight-16B-A3B",
+        "moonshotai/Moonlight-16B-A3B-Instruct",
     ]
-    for model_name in deepseek_v2_models:
+    for model_name in deepseek_models:
         model_class = get_causal_lm_class_via_auto_map(model_name_or_path=model_name)
         assert model_class is not None, f"Failed to resolve CausalLM class via auto_map for '{model_name}'"
 
-        MegatronModelBridge.register_bridge(source=model_class, target=GPTModel)(DeepSeekV2Bridge)
+        MegatronModelBridge.register_bridge(source=model_class, target=GPTModel)(DeepSeekBridge)
